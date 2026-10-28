@@ -1,14 +1,14 @@
+import { io } from 'socket.io-client';
+import { SERVER_URL } from './config';
 
-import { io } from "socket.io-client";
-
-const SOCKET_URL = import.meta.env.BACKEND_BASE_URL || "https://gd-web-rose.vercel.app/";
-
-const socket = io(SOCKET_URL, {
+const socket = io(SERVER_URL || undefined, {
+  autoConnect: false,
   withCredentials: true,
-  autoConnect: false, // Don't connect immediately
+  transports: ['websocket', 'polling'],
   reconnection: true,
+  reconnectionAttempts: Infinity,
   reconnectionDelay: 1000,
-  reconnectionAttempts: 5,
+  reconnectionDelayMax: 5000,
 });
 
 export default socket;

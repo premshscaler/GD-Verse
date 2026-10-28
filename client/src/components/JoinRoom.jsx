@@ -1,133 +1,86 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import axios from 'axios';
+import { SERVER_URL, CONFIG_MISSING } from '../utils/config';
+import { getSavedName, saveName } from '../utils/identity';
 
-// Define the Vercel Backend URL here
-// Use the deployed domain for the API calls
-const BACKEND_BASE_URL = 'https://gd-web-0cv6.onrender.com'; 
+export default function JoinRoom() {
+  const [params] = useSearchParams();
+  const [roomId, setRoomId] = useState((params.get('room') || '').toUpperCase());
+  const [userName, setUserName] = useState(getSavedName());
+  const [message, setMessage] = useState('');
+  const [loading, setLoading] = useState(false);
+  const navigate = useNavigate();
 
-const JoinRoom = () => {
-  const [roomId, setRoomId] = useState('');
-  const [userName, setUserName] = useState('');
-  const [message, setMessage] = useState('');
-  const [loading, setLoading] = useState(false);
-  const navigate = useNavigate();
+  const handleJoin = async () => {
+    const code = roomId.trim().toUpperCase();
+    const name = userName.trim();
+    if (!code) return setMessage('Please enter the room code.');
+    if (!name) return setMessage('Please enter your name.');
+    if (CONFIG_MISSING) return setMessage('The app is not configured: VITE_SERVER_URL is missing on this deployment.');
+    setLoading(true);
+    setMessage('');
+    try {
+      const { data } = await axios.post(`${SERVER_URL}/api/rooms/join`, { passkey: code }, { timeout: 45000 });
+      saveName(name);
+      navigate(`/room/${data.room.passkey}`, { state: { name } });
+    } catch (err) {
+      console.error('Error joining room:', err);
+      if (err.response?.status === 404) setMessage('Room not found. Please check the code and try again.');
+      else if (!err.response) setMessage('Could not reach the server. It may be waking up - wait 30 seconds and try again.');
+      else setMessage(err.response?.data?.message || 'Could not join the room. Please try again.');
+    } finally {
+      setLoading(false);
+    }
+  };
 
-  const handleJoin = async () => {
-    if (!roomId.trim()) {
-      setMessage('Please enter a room passkey.');
-      return;
-    }
+  const onKey = (e) => e.key === 'Enter' && !loading && handleJoin();
 
-    if (!userName.trim()) {
-      setMessage('Please enter your name.');
-      return;
-    }
-
-    setLoading(true);
-    setMessage('');
-
-    try {
-      // Verify room exists
-      // --- FIX APPLIED HERE ---
-      const response = await axios.post(`${BACKEND_BASE_URL}/api/rooms/join`, {
-        passkey: roomId.trim(),
-      });
-      // --------------------------
-
-      if (response.data.room) {
-        // Navigate to room dashboard
-        navigate(`/room/${roomId.trim()}`, { state: { name: userName.trim() } });
-      }
-    } catch (error) {
-      console.error('Error joining room:', error);
-      if (error.response?.status === 404) {
-        setMessage('Room not found. Please check the passkey.');
-      } else {
-        setMessage('Error joining room. Please try again.');
-      }
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleKeyPress = (e) => {
-    if (e.key === 'Enter' && !loading) {
-      handleJoin();
-    }
-  };
-
-  return (
-    <div className="min-h-screen bg-gradient-to-br from-purple-500 to-pink-600 flex items-center justify-center p-4">
-      <div className="bg-white p-8 rounded-lg shadow-2xl w-full max-w-md">
-        <h1 className="text-3xl font-bold mb-6 text-gray-800 text-center">
-          Join a Room
-        </h1>
-
-        <div className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Room Passkey
-            </label>
-            <input
-              type="text"
-              value={roomId}
-              onChange={(e) => setRoomId(e.target.value)}
-              onKeyPress={handleKeyPress}
-              placeholder="Enter room passkey"
-              className="w-full p-3 border border-gray-300 rounded-lg text-gray-800 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-              disabled={loading}
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Your Name
-            </label>
-            <input
-              type="text"
-              value={userName}
-              onChange={(e) => setUserName(e.target.value)}
-              onKeyPress={handleKeyPress}
-              placeholder="Enter your name"
-              className="w-full p-3 border border-gray-300 rounded-lg text-gray-800 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-              disabled={loading}
-            />
-          </div>
-
-          <button
-            onClick={handleJoin}
-            disabled={loading || !roomId.trim() || !userName.trim()}
-            className="w-full bg-purple-600 text-white py-3 px-4 rounded-lg font-semibold hover:bg-purple-700 transition duration-300 disabled:bg-gray-400 disabled:cursor-not-allowed"
-          >
-            {loading ? 'Joining...' : 'Join Room'}
-          </button>
-
-          <div className="text-center">
-            <button
-              onClick={() => navigate('/')}
-              className="text-purple-600 hover:underline"
-              disabled={loading}
-            >
-              ← Back to Home
-            </button>
-          </div>
-        </div>
-
-        {message && (
-          <div
-            className={`mt-4 p-3 rounded-lg text-center ${
-              message.includes('Error') || message.includes('not found')
-                ? 'bg-red-100 text-red-700'
-                : 'bg-green-100 text-green-700'
-            }`}
-          >
-            {message}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-};
-
-export default JoinRoom;
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-purple-500 to-pink-600 flex items-center justify-center p-4">
+      <div className="bg-white p-8 rounded-lg shadow-2xl w-full max-w-md">
+        <h1 className="text-3xl font-bold mb-6 text-gray-800 text-center">Join a room</h1>
+        <div className="space-y-4">
+          <div>
+            <label htmlFor="code" className="block text-sm font-medium text-gray-700 mb-2">Room code</label>
+            <input
+              id="code"
+              type="text"
+              value={roomId}
+              onChange={(e) => setRoomId(e.target.value.toUpperCase())}
+              onKeyDown={onKey}
+              placeholder="e.g. K7M3QX"
+              className="w-full p-3 border border-gray-300 rounded-lg text-gray-800 tracking-widest uppercase focus:outline-none focus:ring-2 focus:ring-purple-500"
+              disabled={loading}
+            />
+          </div>
+          <div>
+            <label htmlFor="jname" className="block text-sm font-medium text-gray-700 mb-2">Your name</label>
+            <input
+              id="jname"
+              type="text"
+              value={userName}
+              maxLength={40}
+              onChange={(e) => setUserName(e.target.value)}
+              onKeyDown={onKey}
+              placeholder="Enter your name"
+              className="w-full p-3 border border-gray-300 rounded-lg text-gray-800 focus:outline-none focus:ring-2 focus:ring-purple-500"
+              disabled={loading}
+            />
+          </div>
+          <button
+            onClick={handleJoin}
+            disabled={loading || !roomId.trim() || !userName.trim()}
+            className="w-full bg-purple-600 text-white py-3 px-4 rounded-lg font-semibold hover:bg-purple-700 transition disabled:bg-gray-400 disabled:cursor-not-allowed"
+          >
+            {loading ? 'Joining...' : 'Join room'}
+          </button>
+          <div className="text-center">
+            <button onClick={() => navigate('/')} className="text-purple-600 hover:underline" disabled={loading}>Back to home</button>
+          </div>
+        </div>
+        {message && <div role="alert" className="mt-4 p-3 rounded-lg text-center bg-red-100 text-red-700 text-sm">{message}</div>}
+      </div>
+    </div>
+  );
+}

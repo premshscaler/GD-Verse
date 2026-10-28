@@ -1,168 +1,92 @@
 const PDFDocument = require('pdfkit');
 
-class ReportService {
-  generatePDFReport(userAnalysis, feedback, roomId) {
-    return new Promise((resolve, reject) => {
-      try {
-        const doc = new PDFDocument({ margin: 50 });
-        const chunks = [];
+const fmtDur = (ms) => {
+  const s = Math.round((ms || 0) / 1000);
+  return s >= 60 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${s}s`;
+};
 
-        doc.on('data', chunk => chunks.push(chunk));
-        doc.on('end', () => resolve(Buffer.concat(chunks)));
-        doc.on('error', reject);
+/** Builds the PDF from a stored Report (+ optional Session and rank info). */
+function generatePDF({ report, session, rank, total }) {
+  return new Promise((resolve, reject) => {
+    try {
+      const doc = new PDFDocument({ margin: 50, size: 'A4', info: { Title: 'Group Discussion Report' } });
+      const chunks = [];
+      doc.on('data', (c) => chunks.push(c));
+      doc.on('end', () => resolve(Buffer.concat(chunks)));
+      doc.on('error', reject);
 
-        // Header
-        doc.fontSize(24).fillColor('#2563eb').text('Group Discussion Report', { align: 'center' });
-        doc.moveDown(0.5);
-        doc.fontSize(12).fillColor('#6b7280').text(`Room ID: ${roomId}`, { align: 'center' });
-        doc.fontSize(10).text(`Generated: ${new Date().toLocaleString()}`, { align: 'center' });
-        doc.moveDown(2);
+      const W = doc.page.width - 100;
+      const need = (h) => { if (doc.y + h > doc.page.height - 60) doc.addPage(); };
+      const h2 = (t) => { need(40); doc.moveDown(0.8).fontSize(15).fillColor('#111827').text(t).moveDown(0.3); };
+      const body = (t, color = '#374151') => doc.fontSize(11).fillColor(color).text(t, { width: W });
+      const bar = (label, value, max, note) => {
+        need(34);
+        const y = doc.y;
+        doc.fontSize(10).fillColor('#374151').text(`${label}${note ? ' - ' + note : ''}`, 50, y, { width: W - 70 });
+        doc.text(`${value}/${max}`, 50, y, { width: W, align: 'right' });
+        const by = y + 15;
+        doc.roundedRect(50, by, W, 7, 3).fill('#e5e7eb');
+        doc.roundedRect(50, by, Math.max(2, (W * Math.min(value, max)) / max), 7, 3).fill('#2563eb');
+        doc.y = by + 14;
+        doc.x = 50;
+      };
 
-        // Participant Info
-        doc.fontSize(18).fillColor('#1f2937').text('Participant Information');
-        doc.moveDown(0.5);
-        doc.fontSize(12).fillColor('#374151');
-        doc.text(`Name: ${userAnalysis.userName}`);
-        doc.text(`Speaking Time: ${Math.round(userAnalysis.speakingTime / 1000)} seconds`);
-        doc.text(`Total Words: ${userAnalysis.totalWords}`);
-        doc.text(`Utterances: ${userAnalysis.utteranceCount}`);
-        doc.text(`Words per Minute: ${Math.round(userAnalysis.wordsPerMinute)}`);
-        doc.moveDown(1.5);
+      const a = report && report.analysis;
+      const f = report && report.feedback;
 
-        // Performance Metrics
-        doc.fontSize(18).fillColor('#1f2937').text('Performance Metrics');
-        doc.moveDown(0.5);
-        
-        // Speaking confidence
-        const confidencePercent = Math.round(userAnalysis.averageConfidence * 100);
-        doc.fontSize(12).fillColor('#374151');
-        doc.text(`Speech Clarity: ${confidencePercent}%`);
-        this.drawProgressBar(doc, confidencePercent, '#10b981');
-        doc.moveDown(1);
+      doc.fontSize(22).fillColor('#2563eb').text('Group Discussion Report', { align: 'center' });
+      doc.moveDown(0.3).fontSize(10).fillColor('#6b7280').text(`Generated ${new Date().toLocaleString()}`, { align: 'center' });
 
-        // Sentiment analysis
-        doc.text('Sentiment Distribution:');
-        doc.moveDown(0.3);
-        const sentiments = userAnalysis.sentimentDistribution;
-        Object.entries(sentiments).forEach(([sentiment, count]) => {
-          const percentage = Math.round((count / userAnalysis.utteranceCount) * 100);
-          doc.fontSize(11).text(`  ${sentiment}: ${percentage}%`);
-        });
-        doc.moveDown(1.5);
+      h2('Overview');
+      body(`Participant: ${(report && report.userName) || '-'}`);
+      if (session && session.topic) body(`Topic: ${session.topic}`);
+      if (session && session.discussionSec) body(`Discussion length: ${fmtDur(session.discussionSec * 1000)}`);
+      if (rank && total) body(`Group rank: ${rank} of ${total}`);
 
-        // Key Points
-        if (userAnalysis.keyPoints && userAnalysis.keyPoints.length > 0) {
-          doc.fontSize(18).fillColor('#1f2937').text('Key Discussion Points');
-          doc.moveDown(0.5);
-          doc.fontSize(11).fillColor('#374151');
-          userAnalysis.keyPoints.forEach((point, idx) => {
-            doc.text(`${idx + 1}. ${point}`, { indent: 20 });
-            doc.moveDown(0.3);
-          });
-          doc.moveDown(1);
-        }
-
-        // Strengths
-        doc.addPage();
-        doc.fontSize(18).fillColor('#059669').text('✓ Strengths');
-        doc.moveDown(0.5);
-        doc.fontSize(11).fillColor('#374151');
-        if (feedback.strengths.length > 0) {
-          feedback.strengths.forEach(strength => {
-            doc.text(`• ${strength}`, { indent: 20 });
-            doc.moveDown(0.5);
-          });
-        } else {
-          doc.text('Continue developing your discussion skills!', { indent: 20 });
-        }
-        doc.moveDown(1.5);
-
-        // Areas for Improvement
-        doc.fontSize(18).fillColor('#dc2626').text('→ Areas for Improvement');
-        doc.moveDown(0.5);
-        doc.fontSize(11).fillColor('#374151');
-        if (feedback.improvements.length > 0) {
-          feedback.improvements.forEach(improvement => {
-            doc.text(`• ${improvement}`, { indent: 20 });
-            doc.moveDown(0.5);
-          });
-        } else {
-          doc.text('Great job! Keep up the excellent work!', { indent: 20 });
-        }
-        doc.moveDown(1.5);
-
-        // Overall Feedback
-        doc.fontSize(18).fillColor('#1f2937').text('Overall Assessment');
-        doc.moveDown(0.5);
-        doc.fontSize(12).fillColor('#374151');
-        doc.text(feedback.overall, { align: 'justify' });
-        doc.moveDown(2);
-
-        // Recommendations
-        doc.fontSize(16).fillColor('#2563eb').text('Recommendations for Next Discussion');
-        doc.moveDown(0.5);
-        doc.fontSize(11).fillColor('#374151');
-        const recommendations = this.generateRecommendations(userAnalysis, feedback);
-        recommendations.forEach(rec => {
-          doc.text(`• ${rec}`, { indent: 20 });
-          doc.moveDown(0.5);
-        });
-
-        // Footer
-        doc.moveDown(2);
-        doc.fontSize(9).fillColor('#9ca3af').text(
-          'This report is generated automatically based on AI analysis.',
-          { align: 'center' }
-        );
-
+      if (!a) {
+        h2('Report unavailable');
+        body((report && report.error) || 'This report has not finished processing yet.');
         doc.end();
-      } catch (error) {
-        reject(error);
+        return;
       }
-    });
-  }
 
-  drawProgressBar(doc, percentage, color) {
-    const barWidth = 300;
-    const barHeight = 15;
-    const x = doc.x;
-    const y = doc.y;
+      if (a.noSpeech) {
+        h2('No speech detected');
+        body('We could not detect speech in this recording, so no score is shown. Check that your microphone was allowed and unmuted during the discussion.');
+        doc.end();
+        return;
+      }
 
-    // Background
-    doc.rect(x, y, barWidth, barHeight).fillAndStroke('#e5e7eb', '#d1d5db');
+      doc.moveDown(0.5).fontSize(34).fillColor('#2563eb').text(`${a.overallScore}`, { continued: true }).fontSize(14).fillColor('#6b7280').text(' / 100');
 
-    // Progress
-    const progressWidth = (barWidth * percentage) / 100;
-    doc.rect(x, y, progressWidth, barHeight).fillAndStroke(color, color);
+      h2('Key numbers');
+      body(`Speaking time: ${fmtDur(a.speakingMs)}${a.sharePercent != null ? ` (${a.sharePercent}% of the group)` : ''}`);
+      body(`Words: ${a.totalWords}   Turns: ${a.turns}   Words per turn: ${a.wordsPerTurn}`);
+      body(`Pace: ${a.wpm} words per minute`);
+      body(`Clarity: ${a.clarity}%`);
+      body(`Filler words: ${a.fillerCount} (${a.fillerRate} per 100 words)`);
+      body(`Interruptions (approximate): ${a.interruptions || 0}`);
+      const s = a.sentiments || {};
+      body(`Tone: ${s.positive || 0} positive, ${s.neutral || 0} neutral, ${s.negative || 0} negative statements`);
 
-    doc.moveDown(1);
-  }
+      h2('Score breakdown');
+      (a.breakdown || []).forEach((p) => bar(p.label, p.score, p.max, p.note));
 
-  generateRecommendations(analysis, feedback) {
-    const recommendations = [];
+      if (f) {
+        h2('Summary');
+        body(f.summary || '');
+        if (f.strengths && f.strengths.length) { h2('Strengths'); f.strengths.forEach((t) => body(`• ${t}`)); }
+        if (f.improvements && f.improvements.length) { h2('Areas to improve'); f.improvements.forEach((t) => body(`• ${t}`)); }
+        if (f.tips && f.tips.length) { h2('Tips for next round'); f.tips.forEach((t) => body(`• ${t}`)); }
+      }
 
-    if (analysis.speakingTime < 60000) {
-      recommendations.push('Prepare more points to contribute during discussions');
+      if (a.keyPoints && a.keyPoints.length) { h2('Key phrases'); body(a.keyPoints.join(', ')); }
+
+      doc.end();
+    } catch (e) {
+      reject(e);
     }
-
-    if (analysis.wordsPerMinute > 180) {
-      recommendations.push('Practice speaking at a moderate pace with deliberate pauses');
-    } else if (analysis.wordsPerMinute < 100) {
-      recommendations.push('Work on maintaining consistent speaking flow');
-    }
-
-    if (analysis.averageConfidence < 0.7) {
-      recommendations.push('Practice speaking clearly and articulating your thoughts');
-    }
-
-    if (feedback.improvements.length > feedback.strengths.length) {
-      recommendations.push('Record yourself and practice with peers to build confidence');
-    }
-
-    recommendations.push('Continue participating actively in group discussions');
-
-    return recommendations;
-  }
+  });
 }
 
-module.exports = new ReportService();
+module.exports = { generatePDF };

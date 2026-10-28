@@ -1,56 +1,31 @@
+const fmt = (ms) => { const s = Math.round((ms || 0) / 1000); return s >= 60 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${s}s`; };
 
-const UserList = ({ users }) => {
+export default function UserList({ users, contributions = [], selfClientId }) {
+  if (!users.length) return <p className="text-gray-500 text-sm text-center py-4">No participants yet</p>;
+  const stat = (id) => contributions.find((c) => c.clientId === id);
   return (
-    <div>
-      {users.length === 0 ? (
-        <p className="text-gray-500 text-sm text-center py-4">No participants yet</p>
-      ) : (
-        <ul className="space-y-2">
-          {users.map((user) => (
-            <li 
-              key={user.socketId || user.id} 
-              className="border-b border-gray-200 pb-2 last:border-b-0"
-            >
-              <div className="flex items-center justify-between">
-                <span className="font-medium text-gray-800">{user.name}</span>
-                <div className="flex items-center gap-2">
-                  {/* Mic status */}
-                  <span 
-                    className={`text-xs ${user.mic ? 'text-green-600' : 'text-red-600'}`}
-                    title={user.mic ? 'Mic on' : 'Mic off'}
-                  >
-                    {user.mic ? '🎤' : '🔇'}
-                  </span>
-                  
-                  {/* Video status */}
-                  <span 
-                    className={`text-xs ${user.video ? 'text-green-600' : 'text-red-600'}`}
-                    title={user.video ? 'Video on' : 'Video off'}
-                  >
-                    {user.video ? '📹' : '📴'}
-                  </span>
-                  
-                  {/* Speaking indicator */}
-                  {user.speaking && (
-                    <span className="text-xs text-blue-600 animate-pulse" title="Speaking">
-                      🗣️
-                    </span>
-                  )}
-                </div>
-              </div>
-              
-              {/* Speaking time */}
-              {user.speakingTime > 0 && (
-                <div className="text-xs text-gray-500 mt-1">
-                  Spoke: {Math.round(user.speakingTime / 1000)}s
-                </div>
-              )}
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
+    <ul className="space-y-2">
+      {users.map((u) => {
+        const c = stat(u.clientId);
+        return (
+          <li key={u.clientId} className="border-b border-gray-100 pb-2 last:border-b-0">
+            <div className="flex items-center justify-between gap-2">
+              <span className="font-medium text-gray-800 truncate">
+                {u.name}
+                {u.clientId === selfClientId && <span className="text-gray-400 font-normal"> (you)</span>}
+                {u.isHost && <span className="ml-2 text-[10px] uppercase tracking-wide bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded">host</span>}
+              </span>
+              <span className="flex items-center gap-2 text-xs shrink-0">
+                {!u.connected && <span className="text-amber-600">reconnecting...</span>}
+                {u.speaking && <span className="text-blue-600 animate-pulse">speaking</span>}
+                <span className={u.mic ? 'text-green-600' : 'text-red-600'}>{u.mic ? 'mic' : 'muted'}</span>
+                <span className={u.video ? 'text-green-600' : 'text-gray-400'}>{u.video ? 'cam' : 'no cam'}</span>
+              </span>
+            </div>
+            {c && c.speakingMs > 0 && <div className="text-xs text-gray-500 mt-1">Spoke {fmt(c.speakingMs)}</div>}
+          </li>
+        );
+      })}
+    </ul>
   );
-};
-
-export default UserList;
+}

@@ -1,224 +1,197 @@
 const express = require('express');
-const router = express.Router();
 const multer = require('multer');
-const assemblyAIService = require('../services/assemblyAIService');
-const reportService = require('../services/reportService');
+const dbConnect = require('../utils/dbConnect');
+const Report = require('../models/Report');
+const Session = require('../models/Session');
+const assembly = require('../services/assemblyAIService');
+const { analyze, buildFeedback } = require('../lib/analysis');
+const { generatePDF } = require('../services/reportService');
 
-// Configure multer for audio file uploads
-const storage = multer.memoryStorage();
-const upload = multer({ 
-  storage,
-  limits: { fileSize: 100 * 1024 * 1024 }, // 100MB limit
+const router = express.Router();
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 100 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
-    const allowedMimes = ['audio/webm', 'audio/wav', 'audio/mp3', 'audio/ogg', 'audio/mpeg', 'audio/mp4'];
-    if (allowedMimes.includes(file.mimetype) || file.mimetype.includes('audio')) {
-      cb(null, true);
-    } else {
-      cb(new Error('Invalid file type. Only audio files are allowed.'));
-    }
-  }
+    if (/^(audio|video)\//.test(file.mimetype) || file.mimetype === 'application/octet-stream') return cb(null, true);
+    cb(new Error('Only audio files can be uploaded.'));
+  },
 });
 
-// Store analysis results temporarily (in production, use a database)
-const analysisCache = new Map();
+const STALE_MS = 20 * 60 * 1000;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const isId = (v, max = 80) => typeof v === 'string' && /^[\w.-]+$/.test(v) && v.length <= max;
 
-// POST /api/analysis/upload - Upload and analyze audio
-router.post('/upload', (req, res) => {
-  upload.single('audio')(req, res, async (err) => {
-    if (err instanceof multer.MulterError) {
-      console.error('Multer error:', err);
-      return res.status(400).json({ 
-        message: 'File upload error: ' + err.message 
-      });
-    } else if (err) {
-      console.error('Upload error:', err);
-      return res.status(400).json({ 
-        message: err.message || 'File upload failed' 
+async function setStage(sessionId, clientId, patch) {
+  await Report.updateOne({ sessionId, clientId }, { $set: patch });
+}
+
+async function loadSession(sessionId) {
+  // The session row is written when the round ends; allow a short race window.
+  for (let i = 0; i < 6; i++) {
+    const s = await Session.findOne({ sessionId }).lean();
+    if (s) return s;
+    await sleep(1000);
+  }
+  return null;
+}
+
+function contextFor(session, clientId, userName) {
+  const parts = (session && session.participants) || [];
+  const total = parts.reduce((s, p) => s + (p.speakingMs || 0), 0);
+  const me = parts.find((p) => p.clientId === clientId);
+  const discussionMs = session && session.discussionStartedAt && session.endedAt
+    ? new Date(session.endedAt) - new Date(session.discussionStartedAt) : 0;
+  return {
+    userName,
+    participantCount: parts.length || 1,
+    sharePercent: me && total > 0 ? (me.speakingMs / total) * 100 : null,
+    discussionMs,
+    live: me ? { speakingMs: me.speakingMs, turns: me.turns, interruptions: me.interruptions } : null,
+  };
+}
+
+// Runs in the background after the HTTP response has been sent.
+async function processReport({ sessionId, clientId, userName, buffer }) {
+  try {
+    const session = await loadSession(sessionId);
+    const ctx = contextFor(session, clientId, userName);
+
+    let transcript;
+    if (buffer.length < 1500) {
+      transcript = { text: '', words: [] }; // nothing meaningful was recorded
+    } else {
+      await setStage(sessionId, clientId, { stage: 'Uploading audio', progress: 15 });
+      const url = await assembly.uploadAudio(buffer);
+      await setStage(sessionId, clientId, { stage: 'Transcribing your speech', progress: 35 });
+      const created = await assembly.createTranscript(url);
+      transcript = await assembly.waitForTranscript(created.id, {
+        onTick: (status, elapsed) => {
+          const p = Math.min(80, 35 + Math.round(elapsed / 1000));
+          setStage(sessionId, clientId, { stage: status === 'queued' ? 'Waiting in queue' : 'Transcribing your speech', progress: p }).catch(() => {});
+        },
       });
     }
 
+    await setStage(sessionId, clientId, { stage: 'Scoring your discussion', progress: 90 });
+    const analysis = analyze(transcript, ctx);
+    const feedback = buildFeedback(analysis);
+    await setStage(sessionId, clientId, { status: 'completed', stage: 'Done', progress: 100, analysis, feedback, error: null });
+  } catch (err) {
+    console.error(`Report job failed (${sessionId}/${clientId}):`, err.message);
+    await setStage(sessionId, clientId, { status: 'failed', stage: 'Failed', error: err.message }).catch(() => {});
+  }
+}
+
+router.post('/upload', (req, res) => {
+  upload.single('audio')(req, res, async (err) => {
+    if (err) return res.status(400).json({ message: err.message || 'Upload failed.' });
     try {
-      const { roomId, userName, speakingTime } = req.body;
-      
-      if (!req.file) {
-        return res.status(400).json({ message: 'No audio file provided' });
+      const { roomId, sessionId, clientId } = req.body || {};
+      const userName = String((req.body && req.body.userName) || '').trim().slice(0, 40);
+      if (!req.file) return res.status(400).json({ message: 'No audio file was received.' });
+      if (!isId(sessionId) || !isId(clientId, 64) || !userName) {
+        return res.status(400).json({ message: 'sessionId, clientId and userName are required.' });
       }
-
-      if (!roomId || !userName || !speakingTime) {
-        return res.status(400).json({ message: 'Missing required fields' });
+      await dbConnect();
+      const existing = await Report.findOne({ sessionId, clientId }).lean();
+      if (existing && existing.status === 'processing' && Date.now() - new Date(existing.createdAt) < STALE_MS) {
+        return res.json({ reportId: String(existing._id), status: 'processing', message: 'Already processing.' });
       }
-
-      console.log(`Processing audio for ${userName} in room ${roomId}`);
-      console.log(`Audio file size: ${req.file.size} bytes`);
-      console.log(`Audio file type: ${req.file.mimetype}`);
-
-      // Check if file is too small (likely empty or corrupted)
-      if (req.file.size < 1000) {
-        return res.status(400).json({ 
-          message: 'Audio file is too small. Please ensure discussion was recorded properly.' 
-        });
-      }
-
-      // Upload audio to AssemblyAI
-      console.log('Uploading to AssemblyAI...');
-      const audioUrl = await assemblyAIService.uploadAudio(req.file.buffer);
-      console.log('Audio uploaded to AssemblyAI:', audioUrl);
-      
-      // Start transcription
-      console.log('Starting transcription...');
-      const transcriptRequest = await assemblyAIService.transcribeAudio(audioUrl, true);
-      console.log('Transcription started:', transcriptRequest.id);
-      
-      res.json({ 
-        message: 'Audio uploaded successfully. Processing...',
-        transcriptId: transcriptRequest.id,
-        status: 'processing'
-      });
-
-    } catch (error) {
-      console.error('Error in upload handler:', error);
-      console.error('Error stack:', error.stack);
-      res.status(500).json({ 
-        message: 'Failed to process audio', 
-        error: error.message 
-      });
+      const doc = await Report.findOneAndUpdate(
+        { sessionId, clientId },
+        { $set: { roomId, userName, status: 'processing', stage: 'Uploading audio', progress: 5, error: null, analysis: null, feedback: null, createdAt: new Date() } },
+        { upsert: true, new: true }
+      );
+      res.status(202).json({ reportId: String(doc._id), status: 'processing' });
+      processReport({ sessionId, clientId, userName, buffer: req.file.buffer });
+    } catch (e) {
+      console.error('Upload handler error:', e.message);
+      res.status(500).json({ message: 'Could not store your recording. Please retry.' });
     }
   });
 });
 
-// GET /api/analysis/status/:transcriptId - Check transcription status
-router.get('/status/:transcriptId', async (req, res) => {
+router.get('/result/:sessionId/:clientId', async (req, res) => {
   try {
-    const { transcriptId } = req.params;
-    const transcript = await assemblyAIService.getTranscript(transcriptId);
-    
-    console.log(`Transcription status for ${transcriptId}: ${transcript.status}`);
-    
-    res.json({
-      status: transcript.status,
-      transcriptId: transcript.id
-    });
-  } catch (error) {
-    console.error('Error checking status:', error);
-    res.status(500).json({ 
-      message: 'Failed to check status', 
-      error: error.message 
-    });
+    const { sessionId, clientId } = req.params;
+    await dbConnect();
+    let r = await Report.findOne({ sessionId, clientId }).lean();
+    if (!r) return res.status(404).json({ status: 'missing', message: 'No report found yet.' });
+    if (r.status === 'processing' && Date.now() - new Date(r.createdAt) > STALE_MS) {
+      r = { ...r, status: 'failed', error: 'Processing was interrupted (the server may have restarted). Please retry the upload.' };
+    }
+    res.json({ status: r.status, stage: r.stage, progress: r.progress, error: r.error, userName: r.userName, analysis: r.analysis, feedback: r.feedback });
+  } catch (e) {
+    res.status(500).json({ message: 'Could not load the report.' });
   }
 });
 
-// POST /api/analysis/generate-report - Generate analysis report
-router.post('/generate-report', async (req, res) => {
+router.get('/session/:sessionId', async (req, res) => {
   try {
-    const { transcriptId, userName, speakingTime, roomId } = req.body;
-
-    if (!transcriptId || !userName || !roomId) {
-      return res.status(400).json({ message: 'Missing required fields' });
-    }
-
-    console.log(`Generating report for ${userName}`);
-
-    // Get completed transcript
-    const transcript = await assemblyAIService.waitForTranscription(transcriptId);
-
-    if (!transcript || !transcript.text) {
-      return res.status(500).json({ 
-        message: 'Transcription completed but no text was found. The audio may be too short or unclear.' 
-      });
-    }
-
-    console.log('Transcription completed, text length:', transcript.text.length);
-
-    // Analyze user performance
-    const analysis = assemblyAIService.analyzeUserPerformance(
-      transcript, 
-      userName, 
-      parseInt(speakingTime)
-    );
-
-    // Generate feedback
-    const feedback = assemblyAIService.generateFeedback(analysis);
-
-    // Store in cache
-    const cacheKey = `${roomId}_${userName}`;
-    analysisCache.set(cacheKey, { analysis, feedback, timestamp: Date.now() });
-
-    console.log('Analysis completed for', userName);
-
+    const { sessionId } = req.params;
+    await dbConnect();
+    const [session, reports] = await Promise.all([
+      Session.findOne({ sessionId }).lean(),
+      Report.find({ sessionId }).lean(),
+    ]);
+    if (!session && !reports.length) return res.status(404).json({ message: 'Session not found.' });
+    const parts = (session && session.participants) || [];
+    const total = parts.reduce((s, p) => s + (p.speakingMs || 0), 0);
+    const rows = parts.map((p) => {
+      const r = reports.find((x) => x.clientId === p.clientId);
+      const a = r && r.analysis;
+      return {
+        clientId: p.clientId,
+        name: p.name,
+        status: r ? r.status : 'waiting',
+        speakingMs: p.speakingMs,
+        sharePercent: total ? Math.round((p.speakingMs / total) * 100) : 0,
+        turns: p.turns,
+        interruptions: p.interruptions,
+        overallScore: a && !a.noSpeech ? a.overallScore : null,
+        noSpeech: !!(a && a.noSpeech),
+        words: a ? a.totalWords : null,
+        wpm: a ? a.wpm : null,
+      };
+    });
+    rows.sort((x, y) => (y.overallScore ?? -1) - (x.overallScore ?? -1) || y.speakingMs - x.speakingMs);
+    rows.forEach((row, i) => { row.rank = row.overallScore != null ? i + 1 : null; });
     res.json({
-      message: 'Analysis completed',
-      analysis,
-      feedback
+      sessionId,
+      topic: session && session.topic,
+      discussionSec: session && session.discussionSec,
+      endedAt: session && session.endedAt,
+      pending: rows.filter((r) => r.status === 'processing' || r.status === 'waiting').length,
+      participants: rows,
     });
-
-  } catch (error) {
-    console.error('Error generating report:', error);
-    res.status(500).json({ 
-      message: 'Failed to generate report', 
-      error: error.message 
-    });
+  } catch (e) {
+    res.status(500).json({ message: 'Could not load the group report.' });
   }
 });
 
-// GET /api/analysis/download/:roomId/:userName - Download PDF report
-router.get('/download/:roomId/:userName', async (req, res) => {
+router.get('/download/:sessionId/:clientId', async (req, res) => {
   try {
-    const { roomId, userName } = req.params;
-    const decodedUserName = decodeURIComponent(userName);
-    const cacheKey = `${roomId}_${decodedUserName}`;
-    
-    console.log('Downloading PDF for:', cacheKey);
-    
-    const cached = analysisCache.get(cacheKey);
-    if (!cached) {
-      return res.status(404).json({ 
-        message: 'Report not found. Please generate analysis first.' 
-      });
-    }
-
-    const { analysis, feedback } = cached;
-
-    console.log('Generating PDF report...');
-
-    // Generate PDF
-    const pdfBuffer = await reportService.generatePDFReport(analysis, feedback, roomId);
-
-    console.log('PDF generated, size:', pdfBuffer.length);
-
-    // Set headers for file download
+    const { sessionId, clientId } = req.params;
+    await dbConnect();
+    const [report, session, all] = await Promise.all([
+      Report.findOne({ sessionId, clientId }).lean(),
+      Session.findOne({ sessionId }).lean(),
+      Report.find({ sessionId, status: 'completed' }).lean(),
+    ]);
+    if (!report) return res.status(404).json({ message: 'Report not found.' });
+    if (report.status !== 'completed') return res.status(409).json({ message: 'The report is not ready yet.' });
+    const ranked = all.filter((r) => r.analysis && !r.analysis.noSpeech).sort((a, b) => b.analysis.overallScore - a.analysis.overallScore);
+    const idx = ranked.findIndex((r) => r.clientId === clientId);
+    const pdf = await generatePDF({ report, session, rank: idx >= 0 ? idx + 1 : null, total: ranked.length });
+    const safe = (report.userName || 'participant').replace(/[^\w-]+/g, '_');
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename="Discussion_Report_${decodedUserName}_${Date.now()}.pdf"`);
-    res.setHeader('Content-Length', pdfBuffer.length);
-    res.send(pdfBuffer);
-
-    console.log('PDF sent successfully');
-
-  } catch (error) {
-    console.error('Error downloading report:', error);
-    res.status(500).json({ 
-      message: 'Failed to generate PDF', 
-      error: error.message 
-    });
-  }
-});
-
-// DELETE /api/analysis/clear/:roomId - Clear analysis cache for a room
-router.delete('/clear/:roomId', (req, res) => {
-  try {
-    const { roomId } = req.params;
-    let deletedCount = 0;
-
-    for (const key of analysisCache.keys()) {
-      if (key.startsWith(roomId)) {
-        analysisCache.delete(key);
-        deletedCount++;
-      }
-    }
-
-    res.json({ message: `Cleared ${deletedCount} cached reports` });
-  } catch (error) {
-    console.error('Error clearing cache:', error);
-    res.status(500).json({ message: 'Failed to clear cache', error: error.message });
+    res.setHeader('Content-Disposition', `attachment; filename="GD_Report_${safe}.pdf"`);
+    res.setHeader('Content-Length', pdf.length);
+    res.send(pdf);
+  } catch (e) {
+    console.error('PDF error:', e.message);
+    res.status(500).json({ message: 'Could not generate the PDF.' });
   }
 });
 

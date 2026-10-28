@@ -18,7 +18,7 @@ export default function ContributionPie({ data = [] }) {
   // Transform data for the chart
   const chartData = data.map((d) => ({
     name: d.name,
-    value: Math.max(0, d.speakingTime || d.value || 0),
+    value: Math.max(0, d.speakingMs ?? d.speakingTime ?? d.value ?? 0),
   }));
 
   // Check if there's any data
@@ -65,7 +65,7 @@ export default function ContributionPie({ data = [] }) {
       
       {!hasNonZero && (
         <p className="text-sm text-gray-500 text-center mb-4">
-          Start talking to see contribution data!
+          Speaking time appears here automatically once the discussion starts.
         </p>
       )}
 

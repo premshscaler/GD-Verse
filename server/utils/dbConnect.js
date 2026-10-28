@@ -1,38 +1,26 @@
 const mongoose = require('mongoose');
+const config = require('./config');
 
-// Cache the connection in the global object for Vercel function reuse
-let cached = global.mongoose;
-
-if (!cached) {
-  cached = global.mongoose = { conn: null, promise: null };
-}
+let promise = null;
 
 async function dbConnect() {
-  if (cached.conn) {
-    console.log('Using cached database connection.');
-    return cached.conn;
+  if (mongoose.connection.readyState === 1) return mongoose;
+  if (!config.mongoUri) {
+    throw new Error('MONGO_URI is not set. Add it to the server environment variables.');
   }
-  if (!cached.promise) {
-    if (!process.env.MONGO_URI) {
-      throw new Error('MONGO_URI is not defined in environment variables');
-    }
-
-    const opts = {
-      bufferCommands: false,
-    };
-
-    cached.promise = mongoose.connect(process.env.MONGO_URI, opts).then((mongoose) => {
-      console.log('New database connection established.');
-      return mongoose;
-    });
+  if (!promise) {
+    promise = mongoose
+      .connect(config.mongoUri, { serverSelectionTimeoutMS: 10000 })
+      .then(() => {
+        console.log('MongoDB connected');
+        return mongoose;
+      })
+      .catch((e) => {
+        promise = null;
+        throw e;
+      });
   }
-  try {
-    cached.conn = await cached.promise;
-  } catch (e) {
-    cached.promise = null;
-    throw e;
-  }
-  return cached.conn;
+  return promise;
 }
 
 module.exports = dbConnect;

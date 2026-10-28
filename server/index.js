@@ -1,143 +1,57 @@
-// require('dotenv').config();
-
-// const express = require("express");
-// const http = require("http");
-// const cors = require("cors");
-// const mongoose = require("mongoose"); // Required for Mongoose models
-// const { Server } = require("socket.io");
-// const dbConnect = require('./utils/dbConnect'); // Ensure dbConnect is included for controllers to work
-
-// const roomRoutes = require("./routes/roomRoutes");
-// const analysisRoutes = require("./routes/analysisRoutes");
-// const socketHandler = require("./socketHandler");
-
-// const app = express();
-// const server = http.createServer(app);
-
-// // CORS configuration (Ensure CLIENT_ORIGIN is set in Vercel ENV vars)
-// app.use(
-//   cors({
-//     origin: process.env.CLIENT_ORIGIN || "https://wonderful-dasik-d7b0f9.netlify.app",
-//     credentials: true,
-//   })
-// );
-
-// app.use(express.json());
-
-// // Health check endpoint
-// app.get('/api/health', (req, res) => {
-//   res.json({ 
-//     status: 'ok', 
-//     message: 'Server is running',
-//     timestamp: new Date().toISOString()
-//   });
-// });
-
-// // Test AssemblyAI configuration
-// // NOTE: This route should also be checked for any dependencies that need 'dbConnect'
-// app.get('/api/test-assemblyai', async (req, res) => {
-//   // If this route saves data or loads models, add await dbConnect(); here
-//   // Otherwise, leave as is.
-//   try {
-//     const axios = require('axios');
-//     const apiKey = process.env.ASSEMBLYAI_API_KEY;
-//     // ... rest of the logic
-//   } catch (error) {
-//     // ...
-//   }
-// });
-
-// // API routes
-// app.use("/api/rooms", roomRoutes);
-// app.use("/api/analysis", analysisRoutes);
-
-// // Error handling middleware
-// app.use((err, req, res, next) => {
-//   console.error('Server Error:', err);
-//   res.status(500).json({ 
-//     message: 'Internal server error', 
-//     error: err.message 
-//   });
-// });
-
-// // Initialize Socket.IO
-// const io = new Server(server, {
-//   cors: {
-//     origin: process.env.CLIENT_ORIGIN || "https://wonderful-dasik-d7b0f9.netlify.app",
-//     methods: ["GET", "POST"],
-//     credentials: true,
-//   },
-// });
-
-// // Initialize socket handlers
-// socketHandler(io);
-
-// // VERCEL EXPORT
-// module.exports = server;
 require('dotenv').config();
 
-const express = require("express");
-const http = require("http");
-const cors = require("cors");
-const mongoose = require("mongoose");
-const { Server } = require("socket.io");
+const express = require('express');
+const http = require('http');
+const cors = require('cors');
+const { Server } = require('socket.io');
+const config = require('./utils/config');
 const dbConnect = require('./utils/dbConnect');
-
-const roomRoutes = require("./routes/roomRoutes");
-const analysisRoutes = require("./routes/analysisRoutes");
-const socketHandler = require("./socketHandler");
+const roomRoutes = require('./routes/roomRoutes');
+const analysisRoutes = require('./routes/analysisRoutes');
+const socketHandler = require('./socketHandler');
 
 const app = express();
 const server = http.createServer(app);
 
-// CORS configuration (Ensure CLIENT_ORIGIN is set)
-const PROD_ORIGIN = process.env.CLIENT_ORIGIN || "https://wonderful-dasik-d7b0f9.netlify.app";
+const corsOrigin = (origin, cb) => cb(null, config.isOriginAllowed(origin));
 
-app.use(
-  cors({
-    origin: PROD_ORIGIN,
-    credentials: true,
-  })
-);
+app.use(cors({ origin: corsOrigin, credentials: true }));
+app.use(express.json({ limit: '1mb' }));
 
-app.use(express.json());
-
-// Health check endpoint
 app.get('/api/health', (req, res) => {
-  res.json({ 
-    status: 'ok', 
-    message: 'Server is running on Render',
-    timestamp: new Date().toISOString()
+  res.json({
+    status: 'ok',
+    time: new Date().toISOString(),
+    assemblyKeyConfigured: !!config.assemblyKey,
+    mongoConfigured: !!config.mongoUri,
+    corsOrigins: config.clientOrigins.length,
   });
 });
 
-// API routes
-app.use("/api/rooms", roomRoutes);
-app.use("/api/analysis", analysisRoutes);
+app.use('/api/rooms', roomRoutes);
+app.use('/api/analysis', analysisRoutes);
 
-// Error handling middleware
+app.use((req, res) => res.status(404).json({ message: 'Not found' }));
+
+// One global error handler.
+// eslint-disable-next-line no-unused-vars
 app.use((err, req, res, next) => {
-  console.error('Server Error:', err);
-  res.status(500).json({ 
-    message: 'Internal server error', 
-    error: err.message 
-  });
+  console.error('Server error:', err.message);
+  res.status(err.status || 500).json({ message: 'Internal server error' });
 });
 
-// Initialize Socket.IO
 const io = new Server(server, {
-  cors: {
-    origin: PROD_ORIGIN,
-    methods: ["GET", "POST"],
-    credentials: true,
-  },
+  cors: { origin: corsOrigin, methods: ['GET', 'POST'], credentials: true },
+  maxHttpBufferSize: 1e6,
 });
-
-// Initialize socket handlers
 socketHandler(io);
 
-// --- RENDER PORT BINDING FIX ---
-const PORT = process.env.PORT || 5000;
-server.listen(PORT, () => {
-  console.log(`Server is running and listening on port ${PORT}`);
+server.listen(config.port, () => {
+  console.log(`Server listening on port ${config.port}`);
+  if (!config.clientOrigins.length) console.warn('CLIENT_ORIGIN is not set: only localhost origins are allowed in development.');
+  if (!config.assemblyKey) console.warn('ASSEMBLYAI_API_KEY is not set: reports will fail until it is.');
+  // Connect at boot; requests retry the connection if this fails.
+  dbConnect().catch((e) => console.error('MongoDB connection failed at boot:', e.message));
 });
+
+process.on('unhandledRejection', (e) => console.error('Unhandled rejection:', e && e.message));

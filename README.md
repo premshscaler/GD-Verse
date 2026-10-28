@@ -1,292 +1,83 @@
-# 🎙️ GD-APP — AI-Powered Group Discussion & Placement Simulator
+# GD-APP - AI Group Discussion Simulator
 
-> Practice group discussions anytime. Speak, get transcribed live, and receive an AI-driven report on how you performed.
+Practise group discussions with friends over video, then get a personal AI report (score, pace, clarity,
+filler words, tone, speaking share) plus a group comparison. MERN + Socket.io + WebRTC + AssemblyAI.
 
-![Stack](https://img.shields.io/badge/MERN-Stack-green)
-![Realtime](https://img.shields.io/badge/Realtime-Socket.io%20%2B%20WebRTC-blue)
-![STT](https://img.shields.io/badge/STT-AssemblyAI-orange)
-![Status](https://img.shields.io/badge/Status-Hackathon%20Build-purple)
+## Flow (the server is the single source of truth)
 
-**🔗 Live Demo:** [Deployed Link](https://wonderful-dasik-d7b0f9.netlify.app) | **🎥 Demo Video:** `coming soon..` 
+`Lobby -> Prep (topic + countdown) -> Discussion (countdown, recording) -> Ended -> Reports -> New round`
 
----
+* First person in the room is the host. Only the host configures (prep 30/60/90 s, discussion 3/5/10/15 min),
+  starts, ends and resets. If the host leaves, the longest-present participant takes over.
+* The server picks the topic once (never the same as the last round, or the host's custom topic) and owns the
+  prep and discussion timers. Clients render `ceil((endsAt - now) / 1000)` using a server clock offset, so every
+  device shows the same time and late joiners / reloads re-sync from the room snapshot.
+* Each learner records only their own microphone, during the Discussion phase only. Speaking time, turns and
+  interruptions come from voice-activity detection (no button to press); muted time is not counted.
+* After the end, each device uploads its own audio automatically. The server transcribes it with AssemblyAI in a
+  background job, stores the report in MongoDB, and the client polls for progress.
 
-## 📌 Table of Contents
-1. [The Problem](#-the-problem)
-2. [Our Solution](#-our-solution)
-3. [Key Features](#-key-features)
-4. [How It Works](#-how-it-works)
-5. [Benefits](#-benefits)
-6. [Tech Stack](#-tech-stack)
-7. [Architecture](#-architecture)
-8. [Data Model](#-data-model)
-9. [Socket Events & API](#-socket-events--api)
-10. [Folder Structure](#-folder-structure)
-11. [Getting Started](#-getting-started)
-12. [Deployment](#-deployment)
-13. [Challenges & Learnings](#-challenges--learnings)
-14. [Roadmap](#-roadmap)
-15. [Team](#-team)
+## Run locally
 
----
-
-## 🚨 The Problem
-- Group discussions are a major placement filter, yet students rarely get realistic practice.
-- Feedback is subjective, delayed, or missing; colleges lack the manpower to evaluate every student.
-- Students cannot see their own patterns: how much they speak, how often they interrupt, how clear they are.
-
-## 💡 Our Solution
-GD-APP is a virtual placement-training companion. Users join a live room, speak through their microphone, and get a real-time transcript plus an automatic communication analysis with charts and targeted feedback.
-
----
-
-## ✨ Key Features
-- **Real-time group rooms** — join with a room code, see participants live
-- **Microphone capture** — browser audio / WebRTC
-- **Live speech-to-text** — powered by AssemblyAI
-- **Automatic analysis report** — speaking time, participation rate, clarity
-- **Contribution charts** — pie chart of who contributed how much
-- **Personalised feedback** — targeted tips from your performance
-- **Room dashboard** — session overview for hosts / institutions
-
----
-
-## 🔄 How It Works
-
-```text
-1. Create or join a room  →  2. Speak via mic  →  3. Audio streamed for STT
-→  4. Transcript + speaking stats per user  →  5. Analysis report + charts
-→  6. Personalised feedback to improve next round
-```
-
----
-
-## 🌟 Benefits
-
-| Audience | Value |
-| --- | --- |
-| **Students** | Practice anytime, instant feedback, accurate transcripts, clear improvement metrics |
-| **Colleges / Institutions** | Run GD sessions online, automated analytics, no manual evaluation |
-| **Developers** | Modular architecture, scalable backend, clean React frontend, easy deploy (Netlify + Render/Vercel) |
-
----
-
-## 🧰 Tech Stack
-
-| Layer | Technologies |
-| --- | --- |
-| **Frontend** | React.js (Vite), Socket.io-client, charting for contribution pie |
-| **Backend** | Node.js, Express.js, Socket.io |
-| **Database** | MongoDB (Mongoose) |
-| **AI / STT** | AssemblyAI |
-| **Media** | WebRTC / Browser Audio Capture |
-| **Deploy** | Netlify (client), Render / Vercel (server) |
-
----
-
-## 🏗 Architecture
-
-```text
-┌──────────────────────────┐
-│  React Client (Vite)     │
-│  JoinRoom · Room · Report│
-│  Mic capture · Charts    │
-└─────────┬────────────────┘
-          │ Socket.io (events) + REST
-          ▼
-┌──────────────────────────┐        ┌──────────────┐
-│ Express + Socket.io      │───────▶│ AssemblyAI   │
-│ roomController           │  audio │ (STT)        │
-│ roomSocket / analysis    │◀───────│ transcript   │
-└─────────┬────────────────┘        └──────────────┘
-          ▼
-   ┌─────────────┐
-   │ MongoDB     │  (Room: users, transcripts, stats)
-   └─────────────┘
-```
-
----
-
-## 🗄 Data Model
-
-```text
-Room {
-  roomId, createdAt,
-  participants: [{ socketId, name, joinedAt }],
-  transcripts:  [{ speaker, text, timestamp }],
-  stats:        [{ speaker, speakingTime, wordCount, turns }]
-}
-```
-
-> Adjust to match your `Room.js` schema.
-
----
-
-## 📡 Socket Events & API
-> Replace with the actual event names used in `roomSocket.js` and `socketHandler.js`.
-
-| Type | Name | Purpose |
-| --- | --- | --- |
-| Socket | `join-room` | User enters a room |
-| Socket | `user-list` | Broadcast updated participants |
-| Socket | `transcript` | Push new transcribed text to the room |
-| Socket | `leave-room` | Clean up on exit |
-| REST | `POST /api/rooms` | Create a room |
-| REST | `GET /api/rooms/:id` | Fetch room details |
-| REST | `POST /api/analysis/:id` | Generate analysis report |
-
----
-
-## 📁 Folder Structure
-
-**Backend (`/server`)**
-```text
-server/
-├── controllers/
-│   └── roomController.js
-├── models/
-│   └── Room.js
-├── routes/
-│   ├── analysisRoutes.js
-│   └── roomRoutes.js
-├── services/
-├── socket/
-│   └── roomSocket.js
-├── uploads/
-├── utils/
-│   └── dbConnect.js
-├── socketHandler.js
-├── index.js
-├── package.json
-└── .env
-```
-
-**Frontend (`/client`)**
-```text
-client/
-├── public/
-├── src/
-│   ├── assets/
-│   ├── components/
-│   │   ├── AnalysisReport.jsx
-│   │   ├── ContributionPie.jsx
-│   │   ├── Controls.jsx
-│   │   ├── HomePage.jsx
-│   │   ├── JoinRoom.jsx
-│   │   ├── UserList.jsx
-│   │   └── VideoTile.jsx
-│   ├── pages/
-│   │   ├── Room.jsx
-│   │   └── RoomDashboard.jsx
-│   ├── utils/
-│   │   └── socket.js
-│   ├── App.jsx
-│   ├── main.jsx
-│   └── index.css
-├── package.json
-└── .env
-```
-
----
-
-## 🚀 Getting Started
-
-**Prerequisites:** Node.js v18+, MongoDB (Atlas or local), AssemblyAI API key.
-
-### 1. Clone
 ```bash
-git clone https://github.com/yourusername/GD-APP.git
-cd GD-APP
+# server
+cd server && cp .env.example .env     # fill MONGO_URI and ASSEMBLYAI_API_KEY
+npm install && npm run dev            # http://localhost:5000
+
+# client (second terminal)
+cd client && cp .env.example .env
+npm install && npm run dev            # http://localhost:5173
 ```
 
-### 2. Backend
-```bash
-cd server
-npm install
-```
-Create `server/.env`:
-```ini
-MONGO_URI=your_mongo_url
-ASSEMBLYAI_API_KEY=your_key
-PORT=5000
-```
-```bash
-npm start
-```
+Open two browser windows (use a normal and a private window, or two profiles), create a room in one and join with
+the 6-character code in the other. Camera/mic need `https` or `localhost`.
 
-### 3. Frontend
-```bash
-cd client
-npm install
-```
-Create `client/.env`:
-```ini
-VITE_BACKEND_URL=http://localhost:5000
-```
-```bash
-npm run dev
-```
+## Environment variables
 
-### Troubleshooting
-| Problem | Fix |
-| --- | --- |
-| Mic not working | Browsers need HTTPS (or `localhost`) and microphone permission |
-| No transcript | Verify `ASSEMBLYAI_API_KEY` and check server logs for API errors |
-| Socket not connecting | Confirm `VITE_BACKEND_URL` and the CORS origin on the server |
-| Mongo error | Whitelist your IP in Atlas / check `MONGO_URI` |
-| Users can't hear each other | Test with two different browsers or devices; check STUN/TURN settings |
+| Where | Variable | Notes |
+|---|---|---|
+| Server | `MONGO_URI` | also accepts `MONGODB_URI`, `MONGO_URL` |
+| Server | `ASSEMBLYAI_API_KEY` | also accepts `ASSEMBLY_API_KEY`, `Assembly_API_KEY` |
+| Server | `CLIENT_ORIGIN` | frontend URL(s), comma separated, no trailing slash (also `FRONTEND_URL`) |
+| Server | `PORT` | default 5000 |
+| Server (optional) | `ASSEMBLYAI_SPEECH_MODELS` | comma list, only if AssemblyAI asks for an explicit model on your account |
+| Client | `VITE_SERVER_URL` | backend URL, no trailing slash. Must be set at build time on Netlify/Vercel |
+| Client (optional) | `VITE_TURN_URL`, `VITE_TURN_USERNAME`, `VITE_TURN_CREDENTIAL` | TURN server for strict networks |
 
----
+`GET /api/health` shows whether the key, database and CORS origins are configured (never the values).
 
-## ☁️ Deployment
-- **Client:** Netlify. Set `VITE_BACKEND_URL` to the deployed server URL.
-- **Server:** Render or Vercel. Set `MONGO_URI`, `ASSEMBLYAI_API_KEY`, `PORT`.
-- **Note:** WebSockets need a host that supports persistent connections (Render does; Vercel serverless generally does not), so prefer Render for the Socket.io server.
-- Allow the deployed client origin in the server's CORS and Socket.io config.
+## Deploy
 
----
+* **Backend (Render)**: root `server`, build `npm install`, start `npm start`; set the server variables above.
+* **Frontend (Netlify/Vercel)**: root `client`, build `npm run build`, publish `dist`; set `VITE_SERVER_URL` and redeploy.
+  `client/public/_redirects` already handles SPA routing on Netlify.
 
-## 🔒 Privacy & Security Notes
-- Audio and transcripts are personal data: show a consent notice before recording.
-- Keep API keys server-side only; never expose `ASSEMBLYAI_API_KEY` to the client.
-- Clear `uploads/` and set a retention period for transcripts.
-- Add rate limiting on room creation and validate room IDs.
+## API
 
----
+* `POST /api/rooms/create`, `POST /api/rooms/join {passkey}`
+* `POST /api/analysis/upload` (multipart: `audio`, `roomId`, `sessionId`, `clientId`, `userName`) -> `202 {reportId}`
+* `GET /api/analysis/result/:sessionId/:clientId` - status, progress, personal report
+* `GET /api/analysis/session/:sessionId` - ranked group report
+* `GET /api/analysis/download/:sessionId/:clientId` - PDF built from the stored report
+* Stored reports can be reopened at `/report/:sessionId`.
 
-## 🧠 Challenges & Learnings
-- **Real-time sync:** keeping participant lists and transcripts consistent across clients with Socket.io rooms.
-- **Latency vs accuracy:** streaming STT gives live feedback; final transcripts are cleaner. Showing partial results then replacing them with finals gives the best experience.
-- **Speaker attribution:** since each user speaks from their own mic, per-user streams make speaker labels reliable without diarization.
-- **Fair metrics:** speaking time alone can reward talking over others, so combine it with turns, word count, and interruptions.
+## Socket contract
 
----
+Client -> server: `join-room {roomId, clientId, name}`, `toggle-media {mic, video}`, `start-speaking`,
+`stop-speaking`, `configure {prepSec, discussionSec}`, `start-gd {customTopic?}`, `end-discussion`, `reset-round`,
+`leave-room`, `offer/answer/ice-candidate {to, ...}`.
 
-## 🗺 Roadmap
-- [ ] Filler-word detection ("um", "like") and pace (words per minute)
-- [ ] Sentiment and relevance scoring against the GD topic
-- [ ] Random GD topic generator and timers
-- [ ] AI moderator / AI participants for solo practice
-- [ ] Interruption and turn-taking analytics
-- [ ] Downloadable PDF report and progress history per user
-- [ ] Authentication and institution dashboards
-- [ ] Mock HR / technical interview mode
-- [ ] Multilingual support
+Server -> client: `joined {self, peers, state}`, `participants [...]`, `room-state {phase, topic, sessionId,
+prepEndsAt, discussionEndsAt, prepSec, discussionSec, hostClientId, serverNow}`, `contribution-update [...]`,
+`peer-left {socketId}`, `offer/answer/ice-candidate {from, ...}`, `error {code, message}`.
 
----
+## Tests
 
-## 🌍 Impact
-Objective, repeatable GD practice for every student, and zero-effort evaluation for institutions.
+`cd server && npm test` runs the room state-machine tests (fake io and sockets: phases, timers, host handover,
+duplicate names, reconnect, interruption counting) and the analysis-maths tests (synthetic AssemblyAI payloads).
 
----
+## Known limits
 
-## 👥 Team
-
-| Name | Role | Links |
-| --- | --- | --- |
-| Prem Sharma | Full-stack developer | [GitHub](https://github.com/premmsharma122) · [LinkedIn](https://www.linkedin.com/in/prem-sharma-0a4b62291/) |
-
----
-
-
-⭐ If you like this project, star the repo!
+Render's free tier sleeps (first request is slow; sockets reconnect and re-sync). WebRTC mesh suits about 6 people;
+add a TURN server for strict networks. Interruption count is approximate. Out of scope: accounts, LLM-written
+feedback, recording playback, SFU for large rooms.
